@@ -16,10 +16,9 @@ def get_dns_record(udp_socket, domain:str, parent_server: str, record_type):
   udp_socket.sendto(q.pack(), (parent_server, DNS_PORT))
   
   # logic for socket timeout
-  try:
-    pkt, _ = udp_socket.recvfrom(8192)
-  except udp_socket.timeout:
-    return
+  pkt, _ = udp_socket.recvfrom(8192)
+  '''if udp_socket.timeout:
+    return "timeout"'''
   buff = DNSBuffer(pkt)
   
   """
@@ -57,7 +56,7 @@ def get_dns_record(udp_socket, domain:str, parent_server: str, record_type):
     print(f"Answer-{k} {repr(a)}")
     
     # cache query, return
-    if a.rtype == QTYPE.A:
+    if a.rtype == QTYPE.A or a.rtype == QTYPE.CNAME:
       cache[domain].append(a)
       return a
       
@@ -72,24 +71,12 @@ def get_dns_record(udp_socket, domain:str, parent_server: str, record_type):
     adr = RR.parse(buff)
     print(f"Additional-{k} {repr(adr)} Name: {adr.rname}")
     
-    # cache query, append to return list
+    # cache query, append to return list, return
     if adr.rtype == QTYPE.A:
       cache[domain].append(adr)
       domain_list.append(adr)
     
   return domain_list
-
-
-# produces list of queries, eg. ["net", "gvsu.net", "www.gvsu.net"]
-def order_queries(domain_name):
-  tokens = domain_name.split('.')
-  name = tokens[-1]
-  queries = [name]
-  for i in range(len(tokens) - 2, -1, -1):
-    name = tokens[i] + '.' + name
-    queries.append(name)
-  
-  return queries
 
 
 def read_command(command):
@@ -102,7 +89,10 @@ def read_command(command):
   elif command == ".list":
     i = 1
     for key in cache.keys():
-      print(f"{i}: {key} --> {len(cache[key])} result(s)")
+      if isinstance(cache[key], list):
+        print(f"{i}: {key} --> {len(cache[key])} result(s)")
+      elif isinstance(cache[key], str):
+        print(f"{i}: {key} --> {cache[key]}")
       i+=1
   
   # clear cache
@@ -127,6 +117,18 @@ def read_command(command):
     print("Unable to read command")
 
 
+# produces list of queries, eg. ["net", "gvsu.net", "www.gvsu.net"]
+def order_queries(domain_name):
+  tokens = domain_name.split('.')
+  name = tokens[-1]
+  queries = [name]
+  for i in range(len(tokens) - 2, -1, -1):
+    name = tokens[i] + '.' + name
+    queries.append(name)
+  
+  return queries
+
+
 def check_cache(domain_name, path):
   if domain_name in cache.keys():
     path.append(f"cache: queried for {domain_name}")
@@ -134,8 +136,7 @@ def check_cache(domain_name, path):
   return None
 
 
-def lookup(domain_name):
-  path = list()
+def lookup(domain_name, path, cname=None):
   queries = order_queries(domain_name)
   domain_list = [ROOT_SERVER]
   return_value = list()
@@ -148,23 +149,45 @@ def lookup(domain_name):
       # if first query, else
       if name == queries[0]:
         return_value = get_dns_record(sock, name, ROOT_SERVER, "NS")
-        path.append(f"root server ({ROOT_SERVER}): queried for {name}")
+        path.append(f"root server ({ROOT_SERVER}) <-- queried for {name}")
       else:
         return_value = get_dns_record(sock, name, str(domain.rdata), "A")
-        path.append(f"{domain.rname} ({domain.rdata}): queried for {name}")
+        path.append(f"{domain.rname} ({domain.rdata}) <-- queried for {name}")
       
-      # check for expected output, for NXDOMAIN, and for A record answer
-      if isinstance(return_value, list):
-        domain_list = return_value
-        break
-      elif return_value == "Domain does not exist":
-        path.append(return_value)
-        break
-      elif isinstance(return_value, RR):
-        path.append(f"{domain_name} ({return_value.rdata})")
-        break
+      # if server couldn't find result, try next in list
+      if not return_value:
+        continue
 
-  return path
+      # if domain does not exist, stop iterating
+      domain_list = return_value
+      if domain_list == "Domain does not exist":
+        return path, domain_list, cname
+
+      # domain name is an alias
+      if not isinstance(domain_list, (list, str)) and domain_list.rtype == QTYPE.CNAME:
+        cname = domain_list.rdata
+        return lookup(str(cname).strip('.'), path, str(cname))
+
+      break
+
+  return path, domain_list, cname
+
+
+def print_summary(domain_name, path, domains, cname):
+  print(f"\nFull Path for {domain_name}:")
+  for step in path:
+    print(step)
+  print(f"\n{domain_name} IPv4(s):")
+  if isinstance(domains, list):
+    for domain in domains:
+      print(f"{domain.rname}: {domain.rdata}")
+  elif domains == "Domain does not exist":
+    print("Domain does not exist")
+  else:
+    if cname:
+      print(f"cname: {str(cname)}")
+    print(f"{domains.rname}: {domains.rdata}")
+  print()
 
 
 if __name__ == '__main__':
@@ -183,12 +206,9 @@ if __name__ == '__main__':
       continue
      
     # check cache or query
-    path = lookup(domain_name)
+    path, domain_list, cname = lookup(domain_name, [])
 
     # output summary
-    print(f"\nFull Path for {domain_name}:")
-    for step in path:
-      print(step)
-    print()
+    print_summary(domain_name, path, domain_list, cname)
   
   sock.close()
