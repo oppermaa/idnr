@@ -7,14 +7,19 @@ There are 13 root servers defined at https://www.iana.org/domains/root/servers
 
 ROOT_SERVER = "199.7.83.42"    # ICANN Root Server
 DNS_PORT = 53
-cache = {".net": "1.1.1.1", ".com": "2.2.2.2", ".io": "3.3.3.3", ".edu": "4.4.4.4"}
+cache = dict()
 
 def get_dns_record(udp_socket, domain:str, parent_server: str, record_type):
   q = DNSRecord.question(domain, qtype = record_type)
   q.header.rd = 0   # Recursion Desired?  NO
   print("DNS query", repr(q))
   udp_socket.sendto(q.pack(), (parent_server, DNS_PORT))
-  pkt, _ = udp_socket.recvfrom(8192)
+  
+  # logic for socket timeout
+  try:
+    pkt, _ = udp_socket.recvfrom(8192)
+  except udp_socket.timeout:
+    return
   buff = DNSBuffer(pkt)
   
   """
@@ -35,6 +40,8 @@ def get_dns_record(udp_socket, domain:str, parent_server: str, record_type):
     return
   if header.rcode != RCODE.NOERROR:
     print("Query failed")
+    if header.rcode == RCODE.NXDOMAIN:
+      return "Domain does not exist"
     return
 
   # Parse the question section #2
@@ -48,6 +55,7 @@ def get_dns_record(udp_socket, domain:str, parent_server: str, record_type):
     print(f"Answer-{k} {repr(a)}")
     if a.rtype == QTYPE.A:
       print("IP address")
+      # cache[a.rname] = a.rdata
       
   # Parse the authority section #4
   for k in range(header.auth):
@@ -55,9 +63,18 @@ def get_dns_record(udp_socket, domain:str, parent_server: str, record_type):
     print(f"Authority-{k} {repr(auth)}")
       
   # Parse the additional section #5
+  domain_list = list()
   for k in range(header.ar):
     adr = RR.parse(buff)
     print(f"Additional-{k} {repr(adr)} Name: {adr.rname}")
+    
+    # cache ips, append to return list
+    if adr.rtype == QTYPE.A:
+      cache[adr.rname] = adr.rdata
+      domain_list.append(adr)
+    
+  return domain_list
+
 
 def read_command(command):
   
@@ -89,36 +106,64 @@ def read_command(command):
         break
       i+=1
   
-if __name__ == '__main__':
-  """ # Create a UDP socket
-  sock = socket(AF_INET, SOCK_DGRAM)
-  # Get all the .edu name servers from the ROOT SERVER
-  get_dns_record(sock, "edu", ROOT_SERVER, "NS")
-  
-  # The following function calls are FAILED attempts to use Google Public DNS
-  # (1) to get name servers which manages gvsu.edu
-  # (2) to resolve the IP address of www.gvsu.edu
-  get_dns_record(sock, "gvsu.edu", "8.8.8.8", "NS")      # (1)
-  get_dns_record(sock, "www.gvsu.edu", "8.8.8.8", "A")   # (2)
-  
-  sock.close() """
+  # unknown command
+  else:
+    print("Unable to read command")
 
+
+def query(domain_name):
+
+    # tokenize url by number of periods/dots
+    path = [f"root server ({ROOT_SERVER})"]
+    tokens = domain_name.split('.')
+    name = tokens[-1]
+      
+    # for each extension to the domain, fetch list of domains to query next
+    domain_list = get_dns_record(sock, name, ROOT_SERVER, "NS")
+    
+    # domain does not exist
+    if domain_list == "Domain does not exist":
+      path.append(domain_list)
+      return path
+    
+    for i in range(len(tokens) - 2, -1, -1):
+      name = tokens[i] + '.' + name
+
+      # for each domain in domain_list, in case domains fail or timeout
+      for domain in domain_list:
+        return_value = get_dns_record(sock, name, str(domain.rdata), "NS")
+        path.append(f"{domain.rname} ({domain.rdata})")
+        if isinstance(return_value, list):
+          domain_list = return_value
+          break
+        
+        # domain does not exist
+        elif return_value == "Domain does not exist":
+          path.append(return_value)
+          break
+
+    return path
+
+
+if __name__ == '__main__':
+
+  # create UDP socket, set timeout
   sock = socket(AF_INET, SOCK_DGRAM)
   sock.settimeout(2)
 
+  # user input loop
   while True:
     domain_name = input("Enter a domain name or .exit > ")
 
+    # run commands
     if domain_name[0] == '.':
       read_command(domain_name)
       continue
 
-      # resolve given address name
-      while True:
-        
-        get_dns_record(sock, domain_name, ROOT_SERVER, "NS")
-        break
-        # Use the function get_dns_record(____) (from the starter code
-        # below) to resolve the IP address of the domain name in question
+    path = query(domain_name)
+    print(f"\nFull Path for {domain_name}:")
+    for step in path:
+      print(step)
+    print()
   
   sock.close()
