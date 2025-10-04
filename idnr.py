@@ -7,6 +7,8 @@ There are 13 root servers defined at https://www.iana.org/domains/root/servers
 
 ROOT_SERVER = "199.7.83.42"    # ICANN Root Server
 DNS_PORT = 53
+cache = {".net": "1.1.1.1", ".com": "2.2.2.2", ".io": "3.3.3.3", ".edu": "4.4.4.4"}
+
 def get_dns_record(udp_socket, domain:str, parent_server: str, record_type):
   q = DNSRecord.question(domain, qtype = record_type)
   q.header.rd = 0   # Recursion Desired?  NO
@@ -57,9 +59,38 @@ def get_dns_record(udp_socket, domain:str, parent_server: str, record_type):
     adr = RR.parse(buff)
     print(f"Additional-{k} {repr(adr)} Name: {adr.rname}")
 
+def read_command(command):
+  
+  # exit program
+  if command == ".exit":
+      exit()
+  
+  # list cache entries
+  elif command == ".list":
+    i = 1
+    for key in cache.keys():
+      print(f"{i}: {key} --> {cache[key]}")
+      i+=1
+  
+  # clear cache
+  elif command == ".clear":
+    cache.clear()
+  
+  # remove entry n from cache
+  elif command.split()[0] == ".remove":
+    n = int(command.split()[1])
+    if not 0 < n <= len(cache):
+      print("Unable to read remove value")
+      return
+    i = 1
+    for key in cache.keys():
+      if i == n:
+        cache.pop(key)
+        break
+      i+=1
   
 if __name__ == '__main__':
-  # Create a UDP socket
+  """ # Create a UDP socket
   sock = socket(AF_INET, SOCK_DGRAM)
   # Get all the .edu name servers from the ROOT SERVER
   get_dns_record(sock, "edu", ROOT_SERVER, "NS")
@@ -69,5 +100,25 @@ if __name__ == '__main__':
   # (2) to resolve the IP address of www.gvsu.edu
   get_dns_record(sock, "gvsu.edu", "8.8.8.8", "NS")      # (1)
   get_dns_record(sock, "www.gvsu.edu", "8.8.8.8", "A")   # (2)
+  
+  sock.close() """
+
+  sock = socket(AF_INET, SOCK_DGRAM)
+  sock.settimeout(2)
+
+  while True:
+    domain_name = input("Enter a domain name or .exit > ")
+
+    if domain_name[0] == '.':
+      read_command(domain_name)
+      continue
+
+      # resolve given address name
+      while True:
+        
+        get_dns_record(sock, domain_name, ROOT_SERVER, "NS")
+        break
+        # Use the function get_dns_record(____) (from the starter code
+        # below) to resolve the IP address of the domain name in question
   
   sock.close()
